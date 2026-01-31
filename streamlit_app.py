@@ -3,115 +3,33 @@
 
 from __future__ import annotations
 
-import csv
 import os
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict
 
 import pandas as pd
 import streamlit as st
 
-DATE_FMT = "%Y-%m-%d"
-DATA_PATH = Path("data/routines.csv")
+import routine_core as rc
+
+DATA_PATH = rc.DEFAULT_DATA_PATH
 PLOT_PATH = Path("plots/score_trend.png")
 REPORT_PATH = Path("reports/weekly_report.html")
 
-CATEGORY_WEIGHTS: dict[str, int] = {
-    "생활리듬": 30,
-    "명상/일기쓰기": 15,
-    "공부시간": 30,
-    "운동": 10,
-    "핵심키워드": 15,
-}
 
-SCORE_TABLES: dict[str, dict[int, float]] = {
-    "생활리듬": {7: 30, 6: 27, 5: 25, 4: 15, 3: 10, 2: 5, 1: 3, 0: 0},
-    "명상/일기쓰기": {7: 15, 6: 14, 5: 13, 4: 10, 3: 8, 2: 6, 1: 3, 0: 0},
-    "운동": {7: 10, 6: 9.5, 5: 9, 4: 8, 3: 7, 2: 4, 1: 2, 0: 0},
-    "핵심키워드": {7: 15, 6: 14, 5: 12, 4: 10, 3: 8, 2: 4, 1: 2, 0: 0},
-}
-
-GRADE_THRESHOLDS: list[tuple[int, str]] = [
-    (95, "SS등급(상위 0.1%)"),
-    (90, "S등급(상위 1%)"),
-    (85, "A등급(상위 5%)"),
-    (75, "B등급(상위 10%)"),
-    (65, "C등급(상위 20%)"),
-    (55, "D등급(상위 30%)"),
-    (0, "주의등급"),
-]
-
-CATEGORY_ORDER = [
-    "생활리듬",
-    "명상/일기쓰기",
-    "공부시간",
-    "운동",
-    "핵심키워드",
-]
-
-
-@dataclass(frozen=True)
-class RoutineEntry:
-    week_start: date
-    category: str
-    days: int
-    score: float
-
-
-def parse_date(value: str) -> date:
-    return datetime.strptime(value, DATE_FMT).date()
-
-
-def week_start_for_day(day: date) -> date:
-    return day - timedelta(days=day.weekday())
-
-
-def ensure_csv(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["week_start", "category", "days", "score"])
-
-
-def calculate_score(category: str, days: int) -> float:
-    if category == "공부시간":
-        weight = CATEGORY_WEIGHTS[category]
-        return round((days / 84) * weight, 2)
-    return SCORE_TABLES[category][days]
-
-
-def grade_for_score(score: float) -> str:
-    for threshold, label in GRADE_THRESHOLDS:
-        if score >= threshold:
-            return label
-    return "주의등급"
-
-
-def build_entry(week_start: date, category: str, days: int) -> Dict[str, object]:
-    score = calculate_score(category, days)
-    return {
-        "week_start": week_start.strftime(DATE_FMT),
-        "category": category,
-        "days": days,
-        "score": score,
-    }
-
-
-def load_dataframe(path: Path) -> pd.DataFrame:
-    ensure_csv(path)
-    df = pd.read_csv(path)
-    if df.empty:
-        return pd.DataFrame(columns=["week_start", "category", "days", "score"])
-    return df
-
-
-def save_dataframe(path: Path, df: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
+def entries_to_dataframe(entries: list[rc.RoutineEntry]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "week_start": entry.week_start.strftime(rc.DATE_FMT),
+                "category": entry.category,
+                "days": entry.days,
+                "score": entry.score,
+            }
+            for entry in entries
+        ]
+    )
 
 
 def compute_totals(df: pd.DataFrame) -> pd.DataFrame:
@@ -122,47 +40,14 @@ def compute_totals(df: pd.DataFrame) -> pd.DataFrame:
         .sum()
         .rename(columns={"score": "total_score"})
     )
-    totals["grade"] = totals["total_score"].apply(grade_for_score)
+    totals["grade"] = totals["total_score"].apply(rc.grade_for_score)
     totals = totals.sort_values("week_start")
     return totals
 
 
-def load_entries(path: Path) -> list[RoutineEntry]:
-    df = load_dataframe(path)
-    entries: list[RoutineEntry] = []
-    if df.empty:
-        return entries
-    for _, row in df.iterrows():
-        entries.append(
-            RoutineEntry(
-                week_start=parse_date(str(row["week_start"])),
-                category=str(row["category"]),
-                days=int(row["days"]),
-                score=float(row["score"]),
-            )
-        )
-    return entries
-
-
-def summarize_by_week(entries: Iterable[RoutineEntry]) -> dict[date, float]:
-    totals: dict[date, float] = defaultdict(float)
-    for entry in entries:
-        totals[entry.week_start] += entry.score
-    return dict(totals)
-
-
-def summarize_by_category(
-    entries: Iterable[RoutineEntry],
-) -> dict[str, dict[date, float]]:
-    categories: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
-    for entry in entries:
-        categories[entry.category][entry.week_start] += entry.score
-    return {category: dict(weeks) for category, weeks in categories.items()}
-
-
 def plot_scores_matplotlib(
-    totals: dict[date, float],
-    category_data: dict[str, dict[date, float]],
+    totals: dict[rc.date, float],
+    category_data: dict[str, dict[rc.date, float]],
     output_path: Path,
 ) -> None:
     import matplotlib.pyplot as plt
@@ -193,8 +78,8 @@ def plot_scores_matplotlib(
 
 
 def plot_scores_svg(
-    totals: dict[date, float],
-    category_data: dict[str, dict[date, float]],
+    totals: dict[rc.date, float],
+    category_data: dict[str, dict[rc.date, float]],
     output_path: Path,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +100,7 @@ def plot_scores_svg(
     lines = []
     labels = []
 
-    def add_series(label: str, series: dict[date, float], color: str) -> None:
+    def add_series(label: str, series: dict[rc.date, float], color: str) -> None:
         points = []
         for idx, day in enumerate(all_dates):
             score = series.get(day)
@@ -276,12 +161,9 @@ def plot_scores_svg(
     return output_path
 
 
-def generate_plot(
-    entries: Iterable[RoutineEntry],
-    output_path: Path,
-) -> tuple[Path, bool]:
-    totals = summarize_by_week(entries)
-    category_data = summarize_by_category(entries)
+def generate_plot(entries: list[rc.RoutineEntry], output_path: Path) -> tuple[Path, bool]:
+    totals = rc.summarize_by_week(entries)
+    category_data = rc.summarize_by_category(entries)
     if not totals and not category_data:
         raise ValueError("시각화할 데이터가 없습니다.")
 
@@ -296,14 +178,9 @@ def generate_plot(
     return output_path, True
 
 
-def week_label(week_start: date) -> str:
-    year, week, _ = week_start.isocalendar()
-    return f"{week_start.strftime(DATE_FMT)} (ISO {year}-W{week:02d})"
-
-
 def generate_report(path: Path, plot_path: Path) -> Path:
-    entries = load_entries(DATA_PATH)
-    totals = summarize_by_week(entries)
+    entries = rc.load_entries(DATA_PATH)
+    totals = rc.summarize_by_week(entries)
     if not totals:
         raise ValueError("등록된 루틴 점수가 없습니다.")
 
@@ -313,9 +190,9 @@ def generate_report(path: Path, plot_path: Path) -> Path:
     rows = []
     for week_start in sorted(totals.keys()):
         total_score = totals[week_start]
-        grade = grade_for_score(total_score)
+        grade = rc.grade_for_score(total_score)
         rows.append(
-            f"<tr><td>{week_label(week_start)}</td><td>{total_score:.1f}점</td>"
+            f"<tr><td>{rc.week_label(week_start)}</td><td>{total_score:.1f}점</td>"
             f"<td>{grade}</td></tr>"
         )
 
@@ -341,7 +218,7 @@ def generate_report(path: Path, plot_path: Path) -> Path:
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
-      document.querySelector(`[data-tab="${id}"]`).classList.add('active');
+      document.querySelector(`[data-tab=\"${id}\"]`).classList.add('active');
     }}
     window.addEventListener('DOMContentLoaded', () => showTab('summary'));
   </script>
@@ -399,12 +276,12 @@ def main() -> None:
                 st.session_state["selected_date"] = date.today()
                 st.experimental_rerun()
 
-        week_start = week_start_for_day(selected_date)
-        st.info(f"선택된 주차 시작일: {week_start.strftime(DATE_FMT)} (월요일 기준)")
+        week_start = rc.week_start_for_day(selected_date)
+        st.info(f"선택된 주차 시작일: {week_start.strftime(rc.DATE_FMT)} (월요일 기준)")
 
         input_cols = st.columns(5)
         inputs: Dict[str, int] = {}
-        for idx, category in enumerate(CATEGORY_ORDER):
+        for idx, category in enumerate(rc.CATEGORY_ORDER):
             with input_cols[idx]:
                 if category == "공부시간":
                     inputs[category] = st.number_input(
@@ -425,9 +302,9 @@ def main() -> None:
                         key=f"input_{category}",
                     )
 
-        scores = {cat: calculate_score(cat, value) for cat, value in inputs.items()}
+        scores = {cat: rc.calculate_score(cat, value) for cat, value in inputs.items()}
         total_score = sum(scores.values())
-        grade = grade_for_score(total_score)
+        grade = rc.grade_for_score(total_score)
 
         score_cols = st.columns(3)
         with score_cols[0]:
@@ -435,22 +312,21 @@ def main() -> None:
         with score_cols[1]:
             st.metric("등급", grade)
         with score_cols[2]:
-            st.metric("주차", week_label(week_start))
+            st.metric("주차", rc.week_label(week_start))
 
         st.markdown("#### 카테고리별 점수")
-        for category in CATEGORY_ORDER:
+        for category in rc.CATEGORY_ORDER:
             st.write(f"- {category}: {scores[category]:.1f}점")
 
         if st.button("저장"):
-            df = load_dataframe(DATA_PATH)
-            new_rows = [build_entry(week_start, category, days) for category, days in inputs.items()]
-            df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-            save_dataframe(DATA_PATH, df)
+            entries = [rc.build_entry(week_start, category, days) for category, days in inputs.items()]
+            rc.upsert_week_entries(DATA_PATH, week_start, entries)
             st.success("저장 완료! 주간 점수가 기록되었습니다.")
 
     with tabs[1]:
         st.subheader("기록 관리")
-        df = load_dataframe(DATA_PATH)
+        entries = rc.load_entries(DATA_PATH)
+        df = entries_to_dataframe(entries)
         if df.empty:
             st.info("아직 저장된 데이터가 없습니다.")
         else:
@@ -465,7 +341,7 @@ def main() -> None:
 
             edit_cols = st.columns(5)
             updated_values: Dict[str, int] = {}
-            for idx, category in enumerate(CATEGORY_ORDER):
+            for idx, category in enumerate(rc.CATEGORY_ORDER):
                 row = week_df[week_df["category"] == category]
                 current = int(row["days"].iloc[0]) if not row.empty else 0
                 with edit_cols[idx]:
@@ -489,25 +365,25 @@ def main() -> None:
                         )
 
             if st.button("수정 저장"):
-                df_filtered = df_sorted[df_sorted["week_start"] != selected_week]
-                new_rows = [
-                    build_entry(parse_date(selected_week), category, days)
+                week_start = rc.parse_date(selected_week)
+                entries = [
+                    rc.build_entry(week_start, category, days)
                     for category, days in updated_values.items()
                 ]
-                df_updated = pd.concat([df_filtered, pd.DataFrame(new_rows)], ignore_index=True)
-                save_dataframe(DATA_PATH, df_updated)
+                rc.upsert_week_entries(DATA_PATH, week_start, entries)
                 st.success("수정 완료! 데이터를 갱신했습니다.")
                 st.experimental_rerun()
 
             if st.button("주차 삭제"):
-                df_filtered = df_sorted[df_sorted["week_start"] != selected_week]
-                save_dataframe(DATA_PATH, df_filtered)
+                week_start = rc.parse_date(selected_week)
+                rc.delete_week_entries(DATA_PATH, week_start)
                 st.success("삭제 완료! 선택한 주차 데이터를 제거했습니다.")
                 st.experimental_rerun()
 
     with tabs[2]:
         st.subheader("점수 추이")
-        df = load_dataframe(DATA_PATH)
+        entries = rc.load_entries(DATA_PATH)
+        df = entries_to_dataframe(entries)
         if df.empty:
             st.info("그래프를 표시할 데이터가 없습니다.")
         else:
@@ -520,7 +396,7 @@ def main() -> None:
             st.markdown("#### 카테고리별 추이")
             pivot = df.pivot_table(
                 index="week_start", columns="category", values="score", aggfunc="sum"
-            ).reindex(columns=CATEGORY_ORDER)
+            ).reindex(columns=rc.CATEGORY_ORDER)
             pivot.index = pd.to_datetime(pivot.index)
             pivot = pivot.sort_index()
             st.line_chart(pivot, height=300)

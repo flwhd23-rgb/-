@@ -7,7 +7,7 @@ APP_PATH="${ROOT_DIR}/${APP_NAME}.app"
 
 SCRIPT=$(cat <<APPLESCRIPT
 set appDir to "${ROOT_DIR}"
-do shell script "cd " & quoted form of appDir & "; nohup python3 -m streamlit run app.py --server.headless true --server.port 8501 > streamlit.log 2>&1 &"
+do shell script "cd " & quoted form of appDir & "; nohup python3 -m streamlit run streamlit_app.py --server.headless true --server.port 8501 > streamlit.log 2>&1 &"
 do shell script "open http://localhost:8501"
 APPLESCRIPT
 )

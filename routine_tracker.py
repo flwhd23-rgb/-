@@ -1,65 +1,24 @@
 #!/usr/bin/env python3
-"""Weekly routine tracker.
-
-Stores weekly routine adherence counts (0-7 days) and plots score trends.
-"""
+"""Weekly routine tracker CLI."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import os
-from collections import defaultdict
-from dataclasses import dataclass
-from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
 
-DEFAULT_DATA_PATH = Path("data/routines.csv")
+import routine_core as rc
+
 DEFAULT_PLOT_PATH = Path("plots/score_trend.png")
 DEFAULT_REPORT_PATH = Path("reports/weekly_report.html")
-DATE_FMT = "%Y-%m-%d"
-
-CATEGORY_WEIGHTS: dict[str, int] = {
-    "생활리듬": 30,
-    "명상/일기쓰기": 15,
-    "공부시간": 30,
-    "운동": 10,
-    "핵심키워드": 15,
-}
-
-SCORE_TABLES: dict[str, dict[int, float]] = {
-    "생활리듬": {7: 30, 6: 27, 5: 25, 4: 15, 3: 10, 2: 5, 1: 3, 0: 0},
-    "명상/일기쓰기": {7: 15, 6: 14, 5: 13, 4: 10, 3: 8, 2: 6, 1: 3, 0: 0},
-    "운동": {7: 10, 6: 9.5, 5: 9, 4: 8, 3: 7, 2: 4, 1: 2, 0: 0},
-    "핵심키워드": {7: 15, 6: 14, 5: 12, 4: 10, 3: 8, 2: 4, 1: 2, 0: 0},
-}
-
-GRADE_THRESHOLDS: list[tuple[int, str]] = [
-    (95, "SS등급(상위 0.1%)"),
-    (90, "S등급(상위 1%)"),
-    (85, "A등급(상위 5%)"),
-    (75, "B등급(상위 10%)"),
-    (65, "C등급(상위 20%)"),
-    (55, "D등급(상위 30%)"),
-    (0, "주의등급"),
-]
 
 
-@dataclass(frozen=True)
-class RoutineEntry:
-    week_start: date
-    category: str
-    days: int
-    score: float
-
-
-def parse_date(value: str) -> date:
+def parse_date(value: str) -> rc.date:
     try:
-        return datetime.strptime(value, DATE_FMT).date()
+        return rc.parse_date(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(
-            f"날짜는 {DATE_FMT} 형식이어야 합니다. (예: 2024-01-15)"
+            f"날짜는 {rc.DATE_FMT} 형식이어야 합니다. (예: 2024-01-15)"
         ) from exc
 
 
@@ -69,130 +28,25 @@ def parse_days(value: str) -> int:
     except ValueError as exc:
         raise argparse.ArgumentTypeError("일수는 정수여야 합니다.") from exc
 
-    if days < 0:
-        raise argparse.ArgumentTypeError("일수는 0 이상이어야 합니다.")
-
     return days
 
 
-def ensure_csv(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["week_start", "category", "days", "score"])
-
-
-def calculate_score(category: str, days: int) -> float:
-    if category == "공부시간":
-        weight = CATEGORY_WEIGHTS[category]
-        return round((days / 84) * weight, 2)
-
-    return SCORE_TABLES[category][days]
-
-
 def validate_days(category: str, days: int) -> None:
-    if category == "공부시간":
-        if days > 84:
-            raise argparse.ArgumentTypeError("공부시간은 0부터 84 사이여야 합니다.")
-        return
-
-    if days > 7:
-        raise argparse.ArgumentTypeError("일수는 0부터 7 사이여야 합니다.")
+    try:
+        rc.validate_days(category, days)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
-def append_entry(path: Path, entry: RoutineEntry) -> None:
-    ensure_csv(path)
-    with path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            [
-                entry.week_start.strftime(DATE_FMT),
-                entry.category,
-                entry.days,
-                entry.score,
-            ]
-        )
-
-
-def load_entries(path: Path) -> list[RoutineEntry]:
-    if not path.exists():
-        return []
-
-    entries: list[RoutineEntry] = []
-    with path.open("r", newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            if not row:
-                continue
-            week_start = parse_date(row["week_start"])
-            category = row["category"].strip()
-            if category not in CATEGORY_WEIGHTS:
-                continue
-            days = parse_days(row["days"])
-            validate_days(category, days)
-            score = float(row["score"])
-            entries.append(
-                RoutineEntry(
-                    week_start=week_start, category=category, days=days, score=score
-                )
-            )
-
-    return entries
-
-
-def summarize_by_week(entries: Iterable[RoutineEntry]) -> dict[date, float]:
-    totals: dict[date, float] = defaultdict(float)
-    for entry in entries:
-        totals[entry.week_start] += entry.score
-    return dict(totals)
-
-
-def summarize_by_category(
-    entries: Iterable[RoutineEntry],
-) -> dict[str, dict[date, float]]:
-    categories: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
-    for entry in entries:
-        categories[entry.category][entry.week_start] += entry.score
-    return {category: dict(weeks) for category, weeks in categories.items()}
-
-
-def grade_for_score(score: float) -> str:
-    for threshold, label in GRADE_THRESHOLDS:
-        if score >= threshold:
-            return label
-    return "주의등급"
-
-
-def week_label(week_start: date) -> str:
-    year, week, _ = week_start.isocalendar()
-    return f"{week_start.strftime(DATE_FMT)} (ISO {year}-W{week:02d})"
-
-
-def prepare_plot_series(
-    entries: Iterable[RoutineEntry],
-    per_category: bool,
-    total_only: bool,
-) -> tuple[dict[date, float], dict[str, dict[date, float]]]:
-    totals = summarize_by_week(entries)
-    if not totals:
-        raise ValueError("시각화할 데이터가 없습니다.")
-
-    if not total_only:
-        category_data = summarize_by_category(entries)
-    else:
-        category_data = {}
-
-    if per_category:
-        category_data = summarize_by_category(entries)
-        totals = {}
-
-    return totals, category_data
+def append_entry(path: Path, entry: rc.RoutineEntry) -> None:
+    entries = rc.load_entries(path)
+    entries.append(entry)
+    rc.save_entries(path, entries)
 
 
 def plot_scores_matplotlib(
-    totals: dict[date, float],
-    category_data: dict[str, dict[date, float]],
+    totals: dict[rc.date, float],
+    category_data: dict[str, dict[rc.date, float]],
     output_path: Path,
 ) -> None:
     import matplotlib.pyplot as plt
@@ -223,8 +77,8 @@ def plot_scores_matplotlib(
 
 
 def plot_scores_svg(
-    totals: dict[date, float],
-    category_data: dict[str, dict[date, float]],
+    totals: dict[rc.date, float],
+    category_data: dict[str, dict[rc.date, float]],
     output_path: Path,
 ) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -245,7 +99,7 @@ def plot_scores_svg(
     lines = []
     labels = []
 
-    def add_series(label: str, series: dict[date, float], color: str) -> None:
+    def add_series(label: str, series: dict[rc.date, float], color: str) -> None:
         points = []
         for idx, day in enumerate(all_dates):
             score = series.get(day)
@@ -291,11 +145,11 @@ def plot_scores_svg(
             f'<text x="{x + 14}" y="{legend_y + 9}" font-size="10">{label}</text>'
         )
 
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">
-  <rect width="100%" height="100%" fill="white" />
-  <text x="{width/2:.1f}" y="20" text-anchor="middle" font-size="14">루틴 점수 추이</text>
-  <line x1="{padding}" y1="{padding}" x2="{padding}" y2="{height - padding}" stroke="#ccc" />
-  <line x1="{padding}" y1="{height - padding}" x2="{width - padding}" y2="{height - padding}" stroke="#ccc" />
+    svg = f"""<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\">
+  <rect width=\"100%\" height=\"100%\" fill=\"white\" />
+  <text x=\"{width/2:.1f}\" y=\"20\" text-anchor=\"middle\" font-size=\"14\">루틴 점수 추이</text>
+  <line x1=\"{padding}\" y1=\"{padding}\" x2=\"{padding}\" y2=\"{height - padding}\" stroke=\"#ccc\" />
+  <line x1=\"{padding}\" y1=\"{height - padding}\" x2=\"{width - padding}\" y2=\"{height - padding}\" stroke=\"#ccc\" />
   {''.join(y_labels)}
   {''.join(x_labels)}
   {''.join(lines)}
@@ -307,12 +161,23 @@ def plot_scores_svg(
 
 
 def generate_plot(
-    entries: Iterable[RoutineEntry],
+    entries: list[rc.RoutineEntry],
     output_path: Path,
     per_category: bool,
     total_only: bool,
 ) -> tuple[Path, bool]:
-    totals, category_data = prepare_plot_series(entries, per_category, total_only)
+    totals = rc.summarize_by_week(entries)
+    if not totals:
+        raise ValueError("시각화할 데이터가 없습니다.")
+
+    if per_category:
+        category_data = rc.summarize_by_category(entries)
+        totals = {}
+    elif total_only:
+        category_data = {}
+    else:
+        category_data = rc.summarize_by_category(entries)
+
     try:
         import matplotlib.pyplot as plt  # noqa: F401
     except ModuleNotFoundError:
@@ -325,30 +190,25 @@ def generate_plot(
 
 
 def init_command(args: argparse.Namespace) -> None:
-    ensure_csv(args.data)
+    rc.ensure_csv(args.data)
     print(f"초기화 완료: {args.data}")
 
 
 def add_command(args: argparse.Namespace) -> None:
-    category = args.category
-    days = args.days
-    validate_days(category, days)
-    score = calculate_score(category, days)
-    entry = RoutineEntry(
-        week_start=args.week_start, category=category, days=days, score=score
-    )
+    validate_days(args.category, args.days)
+    entry = rc.build_entry(args.week_start, args.category, args.days)
     append_entry(args.data, entry)
     print(f"추가 완료: {entry.week_start} {entry.category} {entry.days}일 {entry.score}점")
 
-    entries = load_entries(args.data)
-    totals = summarize_by_week(entries)
+    entries = rc.load_entries(args.data)
+    totals = rc.summarize_by_week(entries)
     total_score = totals.get(entry.week_start, 0.0)
-    grade = grade_for_score(total_score)
-    print(f"주간 합계: {week_label(entry.week_start)} {total_score:.1f}점 {grade}")
+    grade = rc.grade_for_score(total_score)
+    print(f"주간 합계: {rc.week_label(entry.week_start)} {total_score:.1f}점 {grade}")
 
 
 def list_command(args: argparse.Namespace) -> None:
-    entries = load_entries(args.data)
+    entries = rc.load_entries(args.data)
     if not entries:
         print("등록된 루틴 점수가 없습니다.")
         return
@@ -356,13 +216,13 @@ def list_command(args: argparse.Namespace) -> None:
     entries.sort(key=lambda item: (item.week_start, item.category))
     for entry in entries:
         print(
-            f"{entry.week_start.strftime(DATE_FMT)}\t{entry.category}\t"
+            f"{entry.week_start.strftime(rc.DATE_FMT)}\t{entry.category}\t"
             f"{entry.days}일\t{entry.score}점"
         )
 
 
 def plot_command(args: argparse.Namespace) -> None:
-    entries = load_entries(args.data)
+    entries = rc.load_entries(args.data)
     output_path, used_matplotlib = generate_plot(
         entries, args.output, args.per_category, args.total_only
     )
@@ -373,21 +233,21 @@ def plot_command(args: argparse.Namespace) -> None:
 
 
 def summary_command(args: argparse.Namespace) -> None:
-    entries = load_entries(args.data)
-    totals = summarize_by_week(entries)
+    entries = rc.load_entries(args.data)
+    totals = rc.summarize_by_week(entries)
     if not totals:
         print("등록된 루틴 점수가 없습니다.")
         return
 
     for week_start in sorted(totals.keys()):
         total_score = totals[week_start]
-        grade = grade_for_score(total_score)
-        print(f"{week_label(week_start)}\t{total_score:.1f}점\t{grade}")
+        grade = rc.grade_for_score(total_score)
+        print(f"{rc.week_label(week_start)}\t{total_score:.1f}점\t{grade}")
 
 
 def report_command(args: argparse.Namespace) -> None:
-    entries = load_entries(args.data)
-    totals = summarize_by_week(entries)
+    entries = rc.load_entries(args.data)
+    totals = rc.summarize_by_week(entries)
     if not totals:
         print("등록된 루틴 점수가 없습니다.")
         return
@@ -402,20 +262,18 @@ def report_command(args: argparse.Namespace) -> None:
     rows = []
     for week_start in sorted(totals.keys()):
         total_score = totals[week_start]
-        grade = grade_for_score(total_score)
+        grade = rc.grade_for_score(total_score)
         rows.append(
-            f"<tr><td>{week_label(week_start)}</td><td>{total_score:.1f}점</td>"
+            f"<tr><td>{rc.week_label(week_start)}</td><td>{total_score:.1f}점</td>"
             f"<td>{grade}</td></tr>"
         )
 
-    plot_note = (
-        "" if used_matplotlib else "<p>matplotlib 미설치로 SVG 그래프를 사용했습니다.</p>"
-    )
+    plot_note = "" if used_matplotlib else "<p>matplotlib 미설치로 SVG 그래프를 사용했습니다.</p>"
     relative_plot_path = Path(os.path.relpath(plot_path, report_path.parent))
     html = f"""<!doctype html>
-<html lang="ko">
+<html lang=\"ko\">
 <head>
-  <meta charset="utf-8" />
+  <meta charset=\"utf-8\" />
   <title>루틴 주간 리포트</title>
   <style>
     body {{ font-family: sans-serif; margin: 24px; }}
@@ -432,18 +290,18 @@ def report_command(args: argparse.Namespace) -> None:
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
       document.getElementById(id).classList.add('active');
-      document.querySelector(`[data-tab="${{id}}"]`).classList.add('active');
+      document.querySelector(`[data-tab=\"${id}\"]`).classList.add('active');
     }}
     window.addEventListener('DOMContentLoaded', () => showTab('summary'));
   </script>
 </head>
 <body>
   <h1>루틴 주간 리포트</h1>
-  <div class="tabs">
-    <button class="tab-button" data-tab="summary" onclick="showTab('summary')">총합/등급</button>
-    <button class="tab-button" data-tab="trend" onclick="showTab('trend')">그래프 추이</button>
+  <div class=\"tabs\">
+    <button class=\"tab-button\" data-tab=\"summary\" onclick=\"showTab('summary')\">총합/등급</button>
+    <button class=\"tab-button\" data-tab=\"trend\" onclick=\"showTab('trend')\">그래프 추이</button>
   </div>
-  <div id="summary" class="tab-content">
+  <div id=\"summary\" class=\"tab-content\">
     <h2>주간 총합 및 등급</h2>
     <table>
       <thead>
@@ -454,10 +312,10 @@ def report_command(args: argparse.Namespace) -> None:
       </tbody>
     </table>
   </div>
-  <div id="trend" class="tab-content">
+  <div id=\"trend\" class=\"tab-content\">
     <h2>그래프 추이</h2>
     {plot_note}
-    <img src="{relative_plot_path.as_posix()}" alt="루틴 점수 추이 그래프" style="max-width: 100%;" />
+    <img src=\"{relative_plot_path.as_posix()}\" alt=\"루틴 점수 추이 그래프\" style=\"max-width: 100%;\" />
   </div>
 </body>
 </html>
@@ -473,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data",
         type=Path,
-        default=DEFAULT_DATA_PATH,
+        default=rc.DEFAULT_DATA_PATH,
         help="CSV 데이터 파일 경로 (기본값: data/routines.csv)",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -486,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument(
         "category",
         type=str,
-        choices=sorted(CATEGORY_WEIGHTS.keys()),
+        choices=sorted(rc.CATEGORY_WEIGHTS.keys()),
         help="루틴 카테고리",
     )
     add_parser.add_argument(
@@ -538,9 +396,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.func(args)
 
 

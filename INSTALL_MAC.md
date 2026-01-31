@@ -13,7 +13,7 @@
 ## 2) 프로젝트 준비
 1. 이 저장소를 다운로드(또는 압축 해제)합니다.
 2. 다운로드한 폴더를 열고, 다음 파일이 있는지 확인합니다.
-   - `app.py`
+   - `streamlit_app.py`
    - `routine_tracker.py`
    - `requirements.txt`
 

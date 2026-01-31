@@ -53,10 +53,10 @@ python routine_tracker.py plot
 ## GUI 앱 (Streamlit)
 
 코딩을 모르는 사용자도 클릭만으로 입력할 수 있는 시각적 앱이 포함되어 있습니다.
-CLI 엔트리는 `routine_tracker.py`, Streamlit 엔트리 파일은 `app.py`입니다.
+CLI 엔트리는 `routine_tracker.py`, Streamlit 엔트리 파일은 `streamlit_app.py`입니다.
 
 ```bash
-python3 -m streamlit run app.py
+python3 -m streamlit run streamlit_app.py
 ```
 
 브라우저가 자동으로 열리며 `http://localhost:8501`에서 확인할 수 있습니다. macOS에서
@@ -64,8 +64,8 @@ python3 -m streamlit run app.py
 
 ### Streamlit Cloud 배포 안내
 
-- Main file path: `app.py`
-- `app.py`는 저장소 루트(최상단)에 위치해야 합니다.
+- Main file path: `streamlit_app.py`
+- `streamlit_app.py`는 저장소 루트(최상단)에 위치해야 합니다.
 
 ## 주요 개념
 

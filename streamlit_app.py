@@ -25,6 +25,8 @@ CATEGORY_KEY_MAP = {
     "핵심키워드": "핵심키워드",
 }
 
+CSV_HEADER = ["week_start", "category", "days", "score"]
+
 
 def entries_to_dataframe(entries: list[rc.RoutineEntry]) -> pd.DataFrame:
     return pd.DataFrame(
@@ -58,6 +60,10 @@ def safe_rerun() -> None:
         st.rerun()
     else:
         st.experimental_rerun()
+
+
+def validate_csv_headers(headers: list[str]) -> bool:
+    return headers == CSV_HEADER
 
 
 # 그래프 탭 데이터 파이프라인: CSV -> summary_df 캐시
@@ -409,7 +415,7 @@ def main() -> None:
     if "selected_date" not in st.session_state:
         st.session_state["selected_date"] = date.today()
 
-    tabs = st.tabs(["주간 입력", "기록/관리", "그래프"])
+    tabs = st.tabs(["주간 입력", "기록/관리", "그래프", "백업/복원"])
 
     with tabs[0]:
         st.subheader("주간 점수 입력")
@@ -612,6 +618,54 @@ def main() -> None:
                 st.error(str(exc))
             else:
                 st.success(f"리포트를 생성했습니다: {report_path}")
+
+    with tabs[3]:
+        st.subheader("백업/복원")
+        st.info(
+            "Streamlit Cloud는 로컬 파일 저장을 보장하지 않아 재시작 시 데이터가 사라질 수 있으니 "
+            "주기적으로 백업하세요."
+        )
+
+        if DATA_PATH.exists():
+            backup_name = f"routines_backup_{date.today().strftime('%Y-%m-%d')}.csv"
+            csv_bytes = DATA_PATH.read_bytes()
+            st.download_button(
+                "CSV 백업 다운로드",
+                data=csv_bytes,
+                file_name=backup_name,
+                mime="text/csv",
+                key="backup_download",
+            )
+        else:
+            st.info("저장된 데이터가 없습니다.")
+
+        st.markdown("#### CSV 복원")
+        uploaded = st.file_uploader(
+            "백업 CSV 업로드",
+            type=["csv"],
+            key="backup_upload",
+        )
+        if uploaded is not None:
+            uploaded_content = uploaded.getvalue()
+            try:
+                decoded = uploaded_content.decode("utf-8")
+                rows = decoded.splitlines()
+                if not rows:
+                    st.error("업로드한 CSV가 비어 있습니다.")
+                else:
+                    header = rows[0].split(",")
+                    if not validate_csv_headers(header):
+                        st.error(
+                            "CSV 헤더가 올바르지 않습니다. "
+                            "필수 헤더: week_start,category,days,score"
+                        )
+                    else:
+                        DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+                        DATA_PATH.write_bytes(uploaded_content)
+                        st.success("복원 완료")
+                        safe_rerun()
+            except UnicodeDecodeError:
+                st.error("CSV 파일을 UTF-8로 읽을 수 없습니다.")
 
 
 if __name__ == "__main__":

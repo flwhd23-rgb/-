@@ -71,6 +71,9 @@ python3 -m streamlit run streamlit_app.py
 
 - 기록/관리 탭: 주차/기간 필터와 주차별 1행 요약 테이블을 제공하며, 선택 주차를 즉시 수정/삭제할 수 있습니다.
 - 그래프 탭: 필터된 주차 범위에 맞춰 총점 추이 1개 + 카테고리별 개별 그래프 5개로 표시합니다.
+- 위젯 key 충돌 방지를 위해 탭별로 key 네임스페이스를 분리했습니다.
+- 기록/관리 탭은 `edit_*` 계열 key, 그래프 탭은 `charts_*`/`graph_*` key를 사용합니다.
+- 동일 라벨 위젯이라도 key를 분리해 StreamlitDuplicateElementId를 방지합니다.
 
 ## 주요 개념
 

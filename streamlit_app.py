@@ -17,6 +17,14 @@ DATA_PATH = rc.DEFAULT_DATA_PATH
 PLOT_PATH = Path("plots/score_trend.png")
 REPORT_PATH = Path("reports/weekly_report.html")
 
+CATEGORY_KEY_MAP = {
+    "생활리듬": "생활리듬",
+    "명상/일기쓰기": "명상",
+    "공부시간": "공부시간",
+    "운동": "운동",
+    "핵심키워드": "핵심키워드",
+}
+
 
 def entries_to_dataframe(entries: list[rc.RoutineEntry]) -> pd.DataFrame:
     return pd.DataFrame(
@@ -146,6 +154,20 @@ def apply_week_filters(df: pd.DataFrame, label_prefix: str) -> pd.DataFrame:
             ]
 
     return filtered.drop(columns=["week_start_dt"])
+
+
+# 기록/관리 탭 개선: 주차별 수정/삭제 입력값 동기화
+def sync_edit_inputs(df: pd.DataFrame) -> None:
+    selected_week = st.session_state.get("edit_week_select")
+    if not selected_week or df.empty:
+        return
+    week_df = df[df["week_start"] == selected_week]
+    for category in rc.CATEGORY_ORDER:
+        key_suffix = CATEGORY_KEY_MAP[category]
+        key = f"edit_days_{key_suffix}"
+        row = week_df[week_df["category"] == category]
+        current = int(row["days"].iloc[0]) if not row.empty else 0
+        st.session_state[key] = current
 
 
 def plot_scores_matplotlib(
@@ -372,10 +394,10 @@ def main() -> None:
             selected_date = st.date_input(
                 "날짜 선택",
                 value=st.session_state["selected_date"],
-                key="date_input",
+                key="input_date",
             )
         with col_auto:
-            if st.button("이번 주 자동 선택"):
+            if st.button("이번 주 자동 선택", key="input_auto_this_week"):
                 st.session_state["selected_date"] = date.today()
                 safe_rerun()
 
@@ -421,7 +443,7 @@ def main() -> None:
         for category in rc.CATEGORY_ORDER:
             st.write(f"- {category}: {scores[category]:.1f}점")
 
-        if st.button("저장"):
+        if st.button("저장", key="input_save_week"):
             entries = [rc.build_entry(week_start, category, days) for category, days in inputs.items()]
             rc.upsert_week_entries(DATA_PATH, week_start, entries)
             st.success("저장 완료! 주간 점수가 기록되었습니다.")
@@ -433,6 +455,8 @@ def main() -> None:
         if df.empty:
             st.info("아직 저장된 데이터가 없습니다.")
         else:
+            # edit 탭 키 네임스페이스: edit_week_select, edit_auto_this_week,
+            # edit_days_생활리듬/명상/공부시간/운동/핵심키워드, edit_save_week, edit_delete_week
             # 기록/관리 탭 개선: 주차별 요약 + 필터
             filtered_df = apply_week_filters(df, "records")
             weekly_summary = build_weekly_summary(filtered_df)
@@ -456,49 +480,39 @@ def main() -> None:
                 st.stop()
 
             default_week = week_options[0]
-            if "edit_week" not in st.session_state:
-                st.session_state["edit_week"] = default_week
+            if "edit_week_select" not in st.session_state:
+                st.session_state["edit_week_select"] = default_week
+                sync_edit_inputs(df)
 
             col_week, col_auto = st.columns([3, 1])
             with col_week:
                 selected_week = st.selectbox(
                     "주차 선택",
                     options=week_options,
-                    key="edit_week",
+                    key="edit_week_select",
+                    on_change=sync_edit_inputs,
+                    args=(df,),
                 )
             with col_auto:
-                if st.button("이번 주 자동 선택"):
-                    st.session_state["edit_week"] = rc.week_start_for_day(date.today()).strftime(
-                        rc.DATE_FMT
-                    )
+                if st.button("이번 주 자동 선택", key="edit_auto_this_week"):
+                    st.session_state["edit_week_select"] = rc.week_start_for_day(
+                        date.today()
+                    ).strftime(rc.DATE_FMT)
+                    sync_edit_inputs(df)
                     safe_rerun()
-
-            week_df = df[df["week_start"] == selected_week]
-            defaults = {
-                category: int(
-                    week_df[week_df["category"] == category]["days"].iloc[0]
-                )
-                if not week_df[week_df["category"] == category].empty
-                else 0
-                for category in rc.CATEGORY_ORDER
-            }
-
-            if st.session_state.get("edit_week_last") != selected_week:
-                for category, value in defaults.items():
-                    st.session_state[f"edit_{category}"] = value
-                st.session_state["edit_week_last"] = selected_week
 
             edit_cols = st.columns(5)
             updated_values: Dict[str, int] = {}
             for idx, category in enumerate(rc.CATEGORY_ORDER):
                 with edit_cols[idx]:
+                    key_suffix = CATEGORY_KEY_MAP[category]
                     if category == "공부시간":
                         updated_values[category] = st.number_input(
                             f"{category} 수정",
                             min_value=0,
                             max_value=84,
                             step=1,
-                            key=f"edit_{category}",
+                            key=f"edit_days_{key_suffix}",
                         )
                     else:
                         updated_values[category] = st.slider(
@@ -506,10 +520,10 @@ def main() -> None:
                             min_value=0,
                             max_value=7,
                             step=1,
-                            key=f"edit_{category}",
+                            key=f"edit_days_{key_suffix}",
                         )
 
-            if st.button("수정 저장"):
+            if st.button("수정 저장", key="edit_save_week"):
                 week_start = rc.parse_date(selected_week)
                 entries = [
                     rc.build_entry(week_start, category, days)
@@ -519,7 +533,7 @@ def main() -> None:
                 st.success("수정 완료! 데이터를 갱신했습니다.")
                 safe_rerun()
 
-            if st.button("주차 삭제"):
+            if st.button("주차 삭제", key="edit_delete_week"):
                 week_start = rc.parse_date(selected_week)
                 rc.delete_week_entries(DATA_PATH, week_start)
                 st.success("삭제 완료! 선택한 주차 데이터를 제거했습니다.")
@@ -532,6 +546,7 @@ def main() -> None:
         if df.empty:
             st.info("그래프를 표시할 데이터가 없습니다.")
         else:
+            # graph 탭 키 네임스페이스: charts_week_filter, charts_period_mode, charts_range_slider, graph_report
             # 그래프 탭 개선: 주차 단위 필터 + 개별 카테고리 그래프
             filtered_df = apply_week_filters(df, "charts")
             if filtered_df.empty:
@@ -556,7 +571,7 @@ def main() -> None:
                     st.line_chart(series, height=200)
 
             st.markdown("#### 리포트 생성")
-            if st.button("리포트 생성"):
+            if st.button("리포트 생성", key="graph_report"):
                 try:
                     report_path = generate_report(REPORT_PATH, PLOT_PATH)
                 except ValueError as exc:

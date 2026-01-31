@@ -45,6 +45,13 @@ def compute_totals(df: pd.DataFrame) -> pd.DataFrame:
     return totals
 
 
+def safe_rerun() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def plot_scores_matplotlib(
     totals: dict[rc.date, float],
     category_data: dict[str, dict[rc.date, float]],
@@ -274,7 +281,7 @@ def main() -> None:
         with col_auto:
             if st.button("이번 주 자동 선택"):
                 st.session_state["selected_date"] = date.today()
-                st.experimental_rerun()
+                safe_rerun()
 
         week_start = rc.week_start_for_day(selected_date)
         st.info(f"선택된 주차 시작일: {week_start.strftime(rc.DATE_FMT)} (월요일 기준)")
@@ -372,13 +379,13 @@ def main() -> None:
                 ]
                 rc.upsert_week_entries(DATA_PATH, week_start, entries)
                 st.success("수정 완료! 데이터를 갱신했습니다.")
-                st.experimental_rerun()
+                safe_rerun()
 
             if st.button("주차 삭제"):
                 week_start = rc.parse_date(selected_week)
                 rc.delete_week_entries(DATA_PATH, week_start)
                 st.success("삭제 완료! 선택한 주차 데이터를 제거했습니다.")
-                st.experimental_rerun()
+                safe_rerun()
 
     with tabs[2]:
         st.subheader("점수 추이")

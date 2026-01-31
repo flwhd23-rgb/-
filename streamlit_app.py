@@ -60,6 +60,30 @@ def safe_rerun() -> None:
         st.experimental_rerun()
 
 
+# 그래프 탭 데이터 파이프라인: CSV -> summary_df 캐시
+@st.cache_data
+def load_summary_df(data_path: str, mtime: float) -> pd.DataFrame:
+    entries = rc.load_entries(Path(data_path))
+    df = entries_to_dataframe(entries)
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "week_start",
+                "total",
+                *rc.CATEGORY_ORDER,
+                "grade",
+                "week_start_dt",
+            ]
+        )
+
+    summary = build_weekly_summary(df).rename(columns={"total_score": "total"})
+    summary["week_start_dt"] = pd.to_datetime(summary["week_start"], format=rc.DATE_FMT)
+    summary = summary.sort_values("week_start_dt")
+    return summary[
+        ["week_start", "total", *rc.CATEGORY_ORDER, "grade", "week_start_dt"]
+    ]
+
+
 # 기록/관리 탭 개선: 주차별 요약 테이블 및 필터링용 데이터 생성
 def build_weekly_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -541,43 +565,53 @@ def main() -> None:
 
     with tabs[2]:
         st.subheader("점수 추이")
-        entries = rc.load_entries(DATA_PATH)
-        df = entries_to_dataframe(entries)
-        if df.empty:
+        mtime = DATA_PATH.stat().st_mtime if DATA_PATH.exists() else 0.0
+        summary_df = load_summary_df(str(DATA_PATH), mtime)
+        # graph 탭 키 네임스페이스: graph_week_filter, graph_period_mode,
+        # graph_range_slider, graph_report
+        # 그래프 탭 개선: 주차 단위 필터 + 개별 카테고리 그래프
+        if summary_df.empty:
+            filtered_summary = summary_df.copy()
             st.info("그래프를 표시할 데이터가 없습니다.")
         else:
-            # graph 탭 키 네임스페이스: charts_week_filter, charts_period_mode, charts_range_slider, graph_report
-            # 그래프 탭 개선: 주차 단위 필터 + 개별 카테고리 그래프
-            filtered_df = apply_week_filters(df, "charts")
-            if filtered_df.empty:
-                st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+            filtered_summary = apply_week_filters(summary_df, "graph")
+            if filtered_summary.empty:
+                st.warning("선택한 범위에 데이터가 없습니다.")
             else:
-                totals = compute_totals(filtered_df)
+                filtered_summary["week_start_dt"] = pd.to_datetime(
+                    filtered_summary["week_start"], format=rc.DATE_FMT
+                )
+                filtered_summary = filtered_summary.sort_values("week_start_dt")
+                for column in ["total", *rc.CATEGORY_ORDER]:
+                    filtered_summary[column] = pd.to_numeric(
+                        filtered_summary[column], errors="coerce"
+                    ).fillna(0)
+
                 st.markdown("#### 총점 추이")
-                totals_chart = totals.set_index("week_start")["total_score"]
-                totals_chart.index = pd.to_datetime(totals_chart.index, format=rc.DATE_FMT)
-                totals_chart = totals_chart.sort_index()
-                st.line_chart(totals_chart, height=300)
+                total_chart = filtered_summary.set_index("week_start")["total"]
+                st.line_chart(total_chart, height=300)
 
                 st.markdown("#### 카테고리별 추이")
                 for category in rc.CATEGORY_ORDER:
                     st.markdown(f"**{category}**")
-                    category_df = filtered_df[filtered_df["category"] == category].copy()
-                    category_df["week_start_dt"] = pd.to_datetime(
-                        category_df["week_start"], format=rc.DATE_FMT
-                    )
-                    category_df = category_df.sort_values("week_start_dt")
-                    series = category_df.set_index("week_start_dt")["score"]
+                    series = filtered_summary.set_index("week_start")[category]
                     st.line_chart(series, height=200)
 
-            st.markdown("#### 리포트 생성")
-            if st.button("리포트 생성", key="graph_report"):
-                try:
-                    report_path = generate_report(REPORT_PATH, PLOT_PATH)
-                except ValueError as exc:
-                    st.error(str(exc))
-                else:
-                    st.success(f"리포트를 생성했습니다: {report_path}")
+        with st.expander("그래프 디버그 정보", expanded=False):
+            st.write(f"필터 적용 후 행 수: {len(filtered_summary)}")
+            st.write("summary_df.head()")
+            st.dataframe(summary_df.head(), use_container_width=True)
+            st.write("summary_df.dtypes")
+            st.write(summary_df.dtypes)
+
+        st.markdown("#### 리포트 생성")
+        if st.button("리포트 생성", key="graph_report"):
+            try:
+                report_path = generate_report(REPORT_PATH, PLOT_PATH)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"리포트를 생성했습니다: {report_path}")
 
 
 if __name__ == "__main__":

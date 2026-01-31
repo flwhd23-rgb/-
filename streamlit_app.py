@@ -52,6 +52,102 @@ def safe_rerun() -> None:
         st.experimental_rerun()
 
 
+# 기록/관리 탭 개선: 주차별 요약 테이블 및 필터링용 데이터 생성
+def build_weekly_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "week_start",
+                "total_score",
+                "grade",
+                *rc.CATEGORY_ORDER,
+            ]
+        )
+
+    df = df.copy()
+    df["week_start_dt"] = pd.to_datetime(df["week_start"], format=rc.DATE_FMT)
+    pivot = (
+        df.pivot_table(
+            index=["week_start", "week_start_dt"],
+            columns="category",
+            values="score",
+            aggfunc="sum",
+        )
+        .reindex(columns=rc.CATEGORY_ORDER)
+        .fillna(0)
+    )
+    totals = (
+        df.groupby(["week_start", "week_start_dt"], as_index=False)["score"]
+        .sum()
+        .rename(columns={"score": "total_score"})
+    )
+    summary = totals.merge(
+        pivot.reset_index(), on=["week_start", "week_start_dt"], how="left"
+    )
+    summary["grade"] = summary["total_score"].apply(rc.grade_for_score)
+    summary = summary.sort_values("week_start_dt", ascending=False)
+    return summary[
+        ["week_start", "total_score", "grade", *rc.CATEGORY_ORDER, "week_start_dt"]
+    ]
+
+
+# 기록/관리 + 그래프 탭 공통: 주차/기간 필터 적용
+def apply_week_filters(df: pd.DataFrame, label_prefix: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    df = df.copy()
+    df["week_start_dt"] = pd.to_datetime(df["week_start"], format=rc.DATE_FMT)
+    week_options = (
+        df.sort_values("week_start_dt", ascending=False)["week_start"].unique().tolist()
+    )
+
+    st.markdown("#### 필터")
+    col_week, col_period = st.columns([2, 3])
+    with col_week:
+        selected_week = st.selectbox(
+            "주차 선택",
+            options=["(전체)"] + week_options,
+            key=f"{label_prefix}_week_filter",
+        )
+    with col_period:
+        period_mode = st.radio(
+            "기간 선택",
+            ["최근 4주", "최근 8주", "최근 12주", "주차 범위"],
+            horizontal=True,
+            key=f"{label_prefix}_period_mode",
+        )
+
+    filtered = df
+    if selected_week != "(전체)":
+        filtered = filtered[filtered["week_start"] == selected_week]
+
+    if period_mode.startswith("최근"):
+        weeks = int(period_mode.replace("최근 ", "").replace("주", ""))
+        cutoff = df["week_start_dt"].max() - pd.Timedelta(weeks=weeks - 1)
+        filtered = filtered[filtered["week_start_dt"] >= cutoff]
+    else:
+        range_options = df.sort_values("week_start_dt")["week_start"].unique().tolist()
+        if range_options:
+            default_range = (range_options[0], range_options[-1])
+            start_week, end_week = st.select_slider(
+                "주차 범위",
+                options=range_options,
+                value=default_range,
+                key=f"{label_prefix}_range_slider",
+            )
+            start_dt = pd.to_datetime(start_week, format=rc.DATE_FMT)
+            end_dt = pd.to_datetime(end_week, format=rc.DATE_FMT)
+            if start_dt > end_dt:
+                start_dt, end_dt = end_dt, start_dt
+            filtered = filtered[
+                (filtered["week_start_dt"] >= start_dt)
+                & (filtered["week_start_dt"] <= end_dt)
+            ]
+
+    return filtered.drop(columns=["week_start_dt"])
+
+
 def plot_scores_matplotlib(
     totals: dict[rc.date, float],
     category_data: dict[str, dict[rc.date, float]],
@@ -337,27 +433,70 @@ def main() -> None:
         if df.empty:
             st.info("아직 저장된 데이터가 없습니다.")
         else:
-            df_sorted = df.sort_values(["week_start", "category"])
-            st.dataframe(df_sorted, use_container_width=True)
+            # 기록/관리 탭 개선: 주차별 요약 + 필터
+            filtered_df = apply_week_filters(df, "records")
+            weekly_summary = build_weekly_summary(filtered_df)
+            if weekly_summary.empty:
+                st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+            else:
+                summary_view = weekly_summary.drop(columns=["week_start_dt"])
+                st.dataframe(summary_view, use_container_width=True)
 
             st.markdown("#### 주차별 수정/삭제")
-            totals = compute_totals(df_sorted)
-            week_options = totals["week_start"].tolist()
-            selected_week = st.selectbox("주차 선택", week_options)
-            week_df = df_sorted[df_sorted["week_start"] == selected_week]
+            weekly_summary_all = build_weekly_summary(df)
+            week_options = (
+                weekly_summary_all.sort_values("week_start_dt", ascending=False)[
+                    "week_start"
+                ]
+                .unique()
+                .tolist()
+            )
+            if not week_options:
+                st.info("수정/삭제할 주차가 없습니다.")
+                st.stop()
+
+            default_week = week_options[0]
+            if "edit_week" not in st.session_state:
+                st.session_state["edit_week"] = default_week
+
+            col_week, col_auto = st.columns([3, 1])
+            with col_week:
+                selected_week = st.selectbox(
+                    "주차 선택",
+                    options=week_options,
+                    key="edit_week",
+                )
+            with col_auto:
+                if st.button("이번 주 자동 선택"):
+                    st.session_state["edit_week"] = rc.week_start_for_day(date.today()).strftime(
+                        rc.DATE_FMT
+                    )
+                    safe_rerun()
+
+            week_df = df[df["week_start"] == selected_week]
+            defaults = {
+                category: int(
+                    week_df[week_df["category"] == category]["days"].iloc[0]
+                )
+                if not week_df[week_df["category"] == category].empty
+                else 0
+                for category in rc.CATEGORY_ORDER
+            }
+
+            if st.session_state.get("edit_week_last") != selected_week:
+                for category, value in defaults.items():
+                    st.session_state[f"edit_{category}"] = value
+                st.session_state["edit_week_last"] = selected_week
 
             edit_cols = st.columns(5)
             updated_values: Dict[str, int] = {}
             for idx, category in enumerate(rc.CATEGORY_ORDER):
-                row = week_df[week_df["category"] == category]
-                current = int(row["days"].iloc[0]) if not row.empty else 0
                 with edit_cols[idx]:
                     if category == "공부시간":
                         updated_values[category] = st.number_input(
                             f"{category} 수정",
                             min_value=0,
                             max_value=84,
-                            value=current,
                             step=1,
                             key=f"edit_{category}",
                         )
@@ -366,7 +505,6 @@ def main() -> None:
                             f"{category} 수정",
                             min_value=0,
                             max_value=7,
-                            value=current,
                             step=1,
                             key=f"edit_{category}",
                         )
@@ -394,19 +532,28 @@ def main() -> None:
         if df.empty:
             st.info("그래프를 표시할 데이터가 없습니다.")
         else:
-            totals = compute_totals(df)
-            st.markdown("#### 총점 추이")
-            totals_chart = totals.set_index("week_start")["total_score"]
-            totals_chart.index = pd.to_datetime(totals_chart.index)
-            st.line_chart(totals_chart, height=300)
+            # 그래프 탭 개선: 주차 단위 필터 + 개별 카테고리 그래프
+            filtered_df = apply_week_filters(df, "charts")
+            if filtered_df.empty:
+                st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+            else:
+                totals = compute_totals(filtered_df)
+                st.markdown("#### 총점 추이")
+                totals_chart = totals.set_index("week_start")["total_score"]
+                totals_chart.index = pd.to_datetime(totals_chart.index, format=rc.DATE_FMT)
+                totals_chart = totals_chart.sort_index()
+                st.line_chart(totals_chart, height=300)
 
-            st.markdown("#### 카테고리별 추이")
-            pivot = df.pivot_table(
-                index="week_start", columns="category", values="score", aggfunc="sum"
-            ).reindex(columns=rc.CATEGORY_ORDER)
-            pivot.index = pd.to_datetime(pivot.index)
-            pivot = pivot.sort_index()
-            st.line_chart(pivot, height=300)
+                st.markdown("#### 카테고리별 추이")
+                for category in rc.CATEGORY_ORDER:
+                    st.markdown(f"**{category}**")
+                    category_df = filtered_df[filtered_df["category"] == category].copy()
+                    category_df["week_start_dt"] = pd.to_datetime(
+                        category_df["week_start"], format=rc.DATE_FMT
+                    )
+                    category_df = category_df.sort_values("week_start_dt")
+                    series = category_df.set_index("week_start_dt")["score"]
+                    st.line_chart(series, height=200)
 
             st.markdown("#### 리포트 생성")
             if st.button("리포트 생성"):
